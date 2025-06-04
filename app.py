@@ -1,460 +1,232 @@
 import streamlit as st
-import anthropic
-import re
-import time
-import os
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
-from google.auth.transport.requests import Request
 
-# 페이지 설정
-st.set_page_config(
-    page_title="연구 보고서 AI 피드백 시스템",
-    page_icon="📝",
-    layout="wide"
-)
-
-# CSS 스타일링 (동일)
-st.markdown("""
-<style>
-    .main-header {
-        text-align: center;
-        color: #2E86AB;
-        font-size: 2.5rem;
-        margin-bottom: 2rem;
-        font-weight: bold;
-    }
-    .sub-header {
-        text-align: center;
-        color: #666;
-        font-size: 1.2rem;
-        margin-bottom: 2rem;
-    }
-    .success-box {
-        background-color: #d4edda;
-        color: #155724;
-        padding: 1.5rem;
-        border-radius: 10px;
-        border-left: 5px solid #28a745;
-        margin: 1rem 0;
-    }
-    .warning-box {
-        background-color: #fff3cd;
-        color: #856404;
-        padding: 1.5rem;
-        border-radius: 10px;
-        border-left: 5px solid #ffc107;
-        margin: 1rem 0;
-    }
-    .error-box {
-        background-color: #f8d7da;
-        color: #721c24;
-        padding: 1.5rem;
-        border-radius: 10px;
-        border-left: 5px solid #dc3545;
-        margin: 1rem 0;
-    }
-    .stButton > button {
-        background-color: #2E86AB;
-        color: white;
-        border-radius: 10px;
-        border: none;
-        padding: 0.75rem 2rem;
-        font-weight: bold;
-        font-size: 1.1rem;
-        width: 100%;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# 세션 상태 초기화
-if 'analysis_complete' not in st.session_state:
-    st.session_state.analysis_complete = False
-if 'current_doc_id' not in st.session_state:
-    st.session_state.current_doc_id = None
-if 'current_doc_url' not in st.session_state:
-    st.session_state.current_doc_url = None
-
-class GoogleDocsCommenter:
-    def __init__(self):
-        """Google Docs 댓글 추가 클래스"""
-        self.credentials = self._get_credentials()
-        if self.credentials:
-            try:
-                self.docs_service = build('docs', 'v1', credentials=self.credentials)
-                self.drive_service = build('drive', 'v3', credentials=self.credentials)
-                self._test_connection()
-            except Exception as e:
-                st.error(f"Google API 서비스 초기화 실패: {str(e)}")
-                self.docs_service = None
-                self.drive_service = None
-        else:
-            self.docs_service = None
-            self.drive_service = None
+def debug_comment_creation():
+    """댓글 생성 문제를 단계별로 디버깅"""
     
-    def _get_credentials(self):
-        """서비스 계정 인증 정보 가져오기"""
-        try:
-            service_account_info = st.secrets["google_service_account"]
-            scopes = [
-                'https://www.googleapis.com/auth/documents',
-                'https://www.googleapis.com/auth/drive',
-                'https://www.googleapis.com/auth/drive.file'
-            ]
-            
-            credentials = Credentials.from_service_account_info(
-                service_account_info, 
-                scopes=scopes
-            )
-            
-            return credentials
-            
-        except Exception as e:
-            st.sidebar.error(f"Google 인증 실패: {str(e)}")
-            return None
+    st.markdown("### 🔍 댓글 추가 디버깅")
     
-    def _test_connection(self):
-        """Google API 연결 테스트"""
-        try:
-            about = self.drive_service.about().get(fields="user").execute()
-            st.sidebar.success("✅ Google API 연결 성공")
-            
-        except Exception as e:
-            st.sidebar.error(f"❌ Google API 연결 실패: {str(e)}")
-            # 상세 오류 정보 표시
-            if 'No access token' in str(e):
-                st.sidebar.error("🔍 Access Token 문제 발견!")
-                st.sidebar.info("JSON 키를 다시 생성해주세요.")
-            raise e
-    
-    def is_available(self):
-        """Google API 사용 가능 여부 확인"""
-        return self.credentials is not None and self.docs_service is not None
-    
-    def get_document_content(self, doc_id):
-        """문서 내용 읽기"""
-        if not self.is_available():
-            return None
-            
-        try:
-            # 먼저 Drive API로 파일 접근 권한 확인
-            file_metadata = self.drive_service.files().get(
-                fileId=doc_id, 
-                fields="name,permissions"
-            ).execute()
-            
-            st.info(f"📄 문서명: {file_metadata.get('name', '알 수 없음')}")
-            
-            # Docs API로 문서 내용 읽기
-            document = self.docs_service.documents().get(documentId=doc_id).execute()
-            
-            content = ""
-            for element in document.get('body', {}).get('content', []):
-                if 'paragraph' in element:
-                    paragraph = element['paragraph']
-                    for text_run in paragraph.get('elements', []):
-                        if 'textRun' in text_run:
-                            content += text_run['textRun'].get('content', '')
-            
-            return {
-                'title': document.get('title', '제목 없음'),
-                'content': content.strip(),
-                'doc_id': doc_id,
-                'word_count': len(content.split())
-            }
-            
-        except Exception as e:
-            st.error(f"문서 읽기 실패: {str(e)}")
-            return None
-    
-    def add_comment(self, doc_id, comment_text):
-        """문서에 댓글 추가 - 수정된 버전"""
-        if not self.is_available():
-            return False
-            
-        try:
-            comment_body = {
-                'content': comment_text
-            }
-            
-            # fields 파라미터 추가 (필수)
-            result = self.drive_service.comments().create(
-                fileId=doc_id,
-                body=comment_body,
-                fields="*"  # 모든 필드 반환
-            ).execute()
-            
-            return True
-            
-        except Exception as e:
-            st.error(f"댓글 추가 실패: {str(e)}")
-            return False
-
-def extract_doc_id(url):
-    """구글 문서 URL에서 문서 ID 추출"""
-    patterns = [
-        r'/document/d/([a-zA-Z0-9-_]+)',
-        r'id=([a-zA-Z0-9-_]+)',
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return None
-
-def get_anthropic_client():
-    """Anthropic 클라이언트 초기화"""
-    api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        st.error("❌ Anthropic API 키가 설정되지 않았습니다.")
-        st.stop()
-    return anthropic.Anthropic(api_key=api_key)
-
-def analyze_document_content(content):
-    """문서 내용을 분석하여 피드백 생성"""
-    client = get_anthropic_client()
-    
-    system_prompt = """
-    당신은 고등학교 국어 교사로서 학생들의 연구 보고서를 검토하는 전문가입니다.
-    다음 기준에 따라 구체적이고 건설적인 피드백을 제공해주세요:
-
-    **피드백 기준:**
-    1. **구조와 논리성** (25점): 서론-본론-결론의 논리적 흐름, 목차의 체계성
-    2. **내용의 충실성** (30점): 주제 탐구의 깊이, 자료의 다양성과 신뢰성
-    3. **학술적 글쓰기** (20점): 객관적 서술, 적절한 인용, 출처 표기
-    4. **창의성과 독창성** (15점): 새로운 관점, 비판적 사고
-    5. **형식과 표현** (10점): 맞춤법, 문법, 일관된 형식
-
-    구체적이고 실행 가능한 조언을 제공해주세요.
-    """
+    # 테스트할 문서 ID
+    doc_id = "19EZcsfkxY0awvZGAkRtv3fZyknxOUb_qr9mNm2-uSVo"
     
     try:
-        message = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=2500,
-            temperature=0.3,
-            system=system_prompt,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"다음 학생의 연구 보고서를 분석하여 상세한 피드백을 제공해주세요.\n\n{content}"
-                }
-            ]
-        )
+        # 1. 인증 정보 확인
+        service_account_info = st.secrets["google_service_account"]
+        scopes = [
+            'https://www.googleapis.com/auth/documents',
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/drive.file'
+        ]
         
-        return message.content[0].text
+        credentials = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+        drive_service = build('drive', 'v3', credentials=credentials)
+        
+        st.success("✅ 인증 및 서비스 빌드 성공")
+        
+        # 2. 파일 권한 확인
+        st.markdown("#### 📋 파일 권한 확인")
+        
+        try:
+            file_info = drive_service.files().get(
+                fileId=doc_id,
+                fields="name,permissions,capabilities"
+            ).execute()
+            
+            st.success(f"✅ 파일 접근 성공: {file_info.get('name')}")
+            
+            # 권한 정보 표시
+            permissions = file_info.get('permissions', [])
+            capabilities = file_info.get('capabilities', {})
+            
+            st.info(f"📊 권한 수: {len(permissions)}개")
+            st.info(f"💬 댓글 가능: {capabilities.get('canComment', False)}")
+            st.info(f"✏️ 편집 가능: {capabilities.get('canEdit', False)}")
+            
+            # 권한 상세 정보
+            with st.expander("권한 상세 정보"):
+                for i, perm in enumerate(permissions):
+                    st.write(f"권한 {i+1}: {perm.get('type')} - {perm.get('role')}")
+            
+        except Exception as e:
+            st.error(f"❌ 파일 접근 실패: {str(e)}")
+            return False
+        
+        # 3. 기존 댓글 확인
+        st.markdown("#### 💬 기존 댓글 확인")
+        
+        try:
+            comments = drive_service.comments().list(
+                fileId=doc_id,
+                fields="*"
+            ).execute()
+            
+            existing_comments = comments.get('comments', [])
+            st.info(f"📝 기존 댓글 수: {len(existing_comments)}개")
+            
+            # 기존 댓글 표시
+            if existing_comments:
+                with st.expander("기존 댓글 목록"):
+                    for comment in existing_comments[-5:]:  # 최근 5개만
+                        st.write(f"작성자: {comment.get('author', {}).get('displayName', 'Unknown')}")
+                        st.write(f"내용: {comment.get('content', '')[:100]}...")
+                        st.write(f"작성일: {comment.get('createdTime', '')}")
+                        st.write("---")
+            
+        except Exception as e:
+            st.error(f"❌ 기존 댓글 조회 실패: {str(e)}")
+        
+        # 4. 테스트 댓글 추가
+        st.markdown("#### 🧪 테스트 댓글 추가")
+        
+        if st.button("💬 테스트 댓글 추가하기"):
+            try:
+                test_comment = {
+                    'content': f'🤖 테스트 댓글입니다. ({st.session_state.get("test_count", 0) + 1}번째 시도)\n\n이 댓글이 보인다면 API가 정상 작동하는 것입니다.\n\n완도고등학교 AI 피드백 시스템'
+                }
+                
+                result = drive_service.comments().create(
+                    fileId=doc_id,
+                    body=test_comment,
+                    fields="*"
+                ).execute()
+                
+                st.success("✅ 테스트 댓글 추가 성공!")
+                st.json(result)
+                
+                # 카운터 증가
+                st.session_state["test_count"] = st.session_state.get("test_count", 0) + 1
+                
+                st.info("🔄 구글 문서를 새로고침하여 댓글을 확인하세요.")
+                
+            except Exception as e:
+                st.error(f"❌ 테스트 댓글 추가 실패: {str(e)}")
+                
+                # 상세 오류 분석
+                error_str = str(e)
+                if "permission" in error_str.lower():
+                    st.error("🔍 권한 문제입니다. 서비스 계정에 댓글 작성 권한이 없습니다.")
+                    st.markdown("""
+                    **해결 방법:**
+                    1. 구글 문서 공유 설정을 "편집자" 권한으로 변경하세요
+                    2. 또는 서비스 계정 이메일을 직접 공유하세요: `feedback-bot@report-ai-461907.iam.gserviceaccount.com`
+                    """)
+                elif "not found" in error_str.lower():
+                    st.error("🔍 문서를 찾을 수 없습니다.")
+                elif "fields" in error_str.lower():
+                    st.error("🔍 API 파라미터 문제입니다.")
+                else:
+                    st.error(f"🔍 알 수 없는 오류: {error_str}")
+        
+        # 5. 권한 문제 해결 방법 제시
+        st.markdown("#### 🛠️ 권한 문제 해결 방법")
+        
+        service_account_email = "feedback-bot@report-ai-461907.iam.gserviceaccount.com"
+        
+        st.markdown(f"""
+        **방법 1: 공유 설정 변경**
+        1. 구글 문서에서 '공유' 버튼 클릭
+        2. "링크가 있는 모든 사용자" → **"편집자"** 권한으로 변경
+        3. (현재는 "댓글 작성자"로 되어 있을 가능성)
+        
+        **방법 2: 서비스 계정 직접 공유**
+        1. 구글 문서에서 '공유' 버튼 클릭
+        2. 다음 이메일 추가: `{service_account_email}`
+        3. 권한을 "편집자"로 설정
+        
+        **방법 3: 소유자 권한 확인**
+        - 현재 문서 소유자만 댓글 권한을 제어할 수 있습니다
+        - 학생이 문서 소유자인지 확인하세요
+        """)
+        
+        return True
         
     except Exception as e:
-        st.error(f"❌ AI 분석 중 오류가 발생했습니다: {str(e)}")
-        return None
+        st.error(f"❌ 전체 디버깅 실패: {str(e)}")
+        return False
 
-def parse_feedback_sections(feedback_text):
-    """AI 피드백을 섹션별로 파싱"""
-    sections = {
-        "전체 평가": "",
-        "구조와 논리성": "",
-        "내용의 충실성": "",
-        "학술적 글쓰기": "",
-        "창의성과 독창성": "",
-        "형식과 표현": "",
-        "추가 제안사항": ""
-    }
+def check_current_permissions():
+    """현재 권한 상태 확인"""
+    st.markdown("### 🔐 현재 권한 상태")
     
-    lines = feedback_text.split('\n')
-    current_section = "전체 평가"
+    doc_id = "19EZcsfkxY0awvZGAkRtv3fZyknxOUb_qr9mNm2-uSVo"
     
-    for line in lines:
-        line = line.strip()
-        if line:
-            # 섹션 감지
-            if any(keyword in line.lower() for keyword in ["구조", "논리", "체계"]):
-                current_section = "구조와 논리성"
-            elif any(keyword in line.lower() for keyword in ["내용", "충실", "깊이"]):
-                current_section = "내용의 충실성"
-            elif any(keyword in line.lower() for keyword in ["학술", "인용", "출처"]):
-                current_section = "학술적 글쓰기"
-            elif any(keyword in line.lower() for keyword in ["창의", "독창", "새로운"]):
-                current_section = "창의성과 독창성"
-            elif any(keyword in line.lower() for keyword in ["형식", "표현", "문법"]):
-                current_section = "형식과 표현"
-            elif any(keyword in line.lower() for keyword in ["제안", "추가", "향후"]):
-                current_section = "추가 제안사항"
-            
-            sections[current_section] += line + "\n"
-    
-    return {k: v.strip() for k, v in sections.items() if v.strip()}
-
-def check_system_status():
-    """시스템 상태 확인"""
-    with st.sidebar:
-        st.markdown("### 🔧 시스템 상태")
+    try:
+        service_account_info = st.secrets["google_service_account"]
+        scopes = [
+            'https://www.googleapis.com/auth/documents',
+            'https://www.googleapis.com/auth/drive'
+        ]
         
-        # Anthropic API 체크
-        try:
-            anthropic_key = st.secrets.get("ANTHROPIC_API_KEY")
-            if anthropic_key:
-                st.success("✅ AI 분석 엔진 연결됨")
-            else:
-                st.error("❌ AI 분석 엔진 연결 실패")
-        except:
-            st.error("❌ AI 분석 엔진 연결 실패")
+        credentials = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+        drive_service = build('drive', 'v3', credentials=credentials)
         
-        # Google API 체크
-        try:
-            google_config = st.secrets.get("google_service_account")
-            if google_config:
-                st.success("✅ 구글 API 설정 확인됨")
-                
-                # Google 연결 테스트
-                commenter = GoogleDocsCommenter()
-                if commenter.is_available():
-                    st.success("✅ 구글 댓글 기능 활성화")
-                else:
-                    st.error("❌ 구글 연결 실패")
-            else:
-                st.warning("⚠️ 구글 댓글 기능 비활성화")
-        except Exception as e:
-            st.error(f"❌ 구글 연결 오류: {str(e)}")
-
-def main():
-    # 시스템 상태 확인
-    check_system_status()
-    
-    # 헤더
-    st.markdown('<h1 class="main-header">📝 연구 보고서 AI 피드백 시스템</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">구글 문서 링크를 입력하면 AI가 상세한 피드백을 댓글로 달아드립니다</p>', unsafe_allow_html=True)
-    
-    # 사용 안내
-    with st.expander("📋 사용 방법 및 참고 자료", expanded=False):
-        col1, col2 = st.columns(2)
+        # 파일 정보 가져오기
+        file_info = drive_service.files().get(
+            fileId=doc_id,
+            fields="name,permissions,capabilities,owners"
+        ).execute()
         
+        st.success(f"📄 문서: {file_info.get('name')}")
+        
+        # 소유자 정보
+        owners = file_info.get('owners', [])
+        if owners:
+            st.info(f"👤 소유자: {owners[0].get('displayName')} ({owners[0].get('emailAddress')})")
+        
+        # 현재 권한
+        capabilities = file_info.get('capabilities', {})
+        
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.markdown("""
-            ### 📖 사용 방법
-            1. **구글 문서 준비**: 연구 보고서를 구글 문서로 작성
-            2. **공유 설정**: "링크가 있는 모든 사용자 - 댓글 작성자" 권한 설정
-            3. **링크 입력**: 아래에 구글 문서 링크 붙여넣기
-            4. **분석 시작**: "피드백 분석 시작" 버튼 클릭
-            5. **결과 확인**: 구글 문서에 추가된 댓글 확인 및 활용
-            """)
+            can_comment = capabilities.get('canComment', False)
+            st.metric("💬 댓글 가능", "✅ 예" if can_comment else "❌ 아니오")
         
         with col2:
-            st.markdown("""
-            ### 🔗 참고 자료
-            - [📋 탐구 보고서 계획서](https://docs.google.com/document/d/1aAUtsWK8daVP1TVnd9Zn_WE-FNvG8a2FaXXWzL2oPt4/edit?usp=sharing)
-            - [📖 보고서 작성 가이드](https://docs.google.com/document/d/16PuheEpWW8l6bbHwLCYCbeMpti_lk59qlqLYzxsRjD4/edit?usp=sharing)
-            - [💡 예시 주제 목록](https://docs.google.com/document/d/1SvYyqBKpvOUNGfGTHs_xdGfs5TK3ppdDnnZeyM3Aw-E/edit?usp=sharing)
-            - [📄 보고서 템플릿](https://docs.google.com/document/d/1lvZ916Xo5WTw7Gzuvv3kXBbRvrV6PW9buDQWK5byCKU/edit?usp=sharing)
-            """)
-    
-    st.markdown("---")
-    
-    # 메인 입력 영역
-    st.markdown("### 📎 구글 문서 링크 입력")
-    
-    # 경고 수정: label_visibility 사용
-    doc_url = st.text_input(
-        "구글 문서 링크",
-        placeholder="https://docs.google.com/document/d/your-document-id/edit",
-        help="구글 문서의 전체 URL을 입력해주세요",
-        label_visibility="collapsed"
-    )
-    
-    # 문서 링크 검증
-    if doc_url:
-        doc_id = extract_doc_id(doc_url)
-        if doc_id:
-            st.markdown(f'<div class="success-box">✅ 유효한 구글 문서 링크입니다<br><small>문서 ID: {doc_id}</small></div>', unsafe_allow_html=True)
-            st.session_state.current_doc_id = doc_id
-            st.session_state.current_doc_url = doc_url
-        else:
-            st.markdown('<div class="warning-box">⚠️ 올바른 구글 문서 링크를 입력해주세요<br><small>예시: https://docs.google.com/document/d/문서ID/edit</small></div>', unsafe_allow_html=True)
-            st.session_state.current_doc_id = None
-            st.session_state.current_doc_url = None
-    
-    # 분석 버튼
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        analyze_button = st.button("🚀 피드백 분석 시작", type="primary", disabled=not st.session_state.current_doc_id)
-    
-    # 분석 실행
-    if analyze_button and st.session_state.current_doc_id:
-        st.markdown("---")
+            can_edit = capabilities.get('canEdit', False)
+            st.metric("✏️ 편집 가능", "✅ 예" if can_edit else "❌ 아니오")
         
-        # Google Docs 연동 초기화
-        commenter = GoogleDocsCommenter()
+        with col3:
+            can_share = capabilities.get('canShare', False)
+            st.metric("🔗 공유 가능", "✅ 예" if can_share else "❌ 아니오")
         
-        if not commenter.is_available():
-            st.warning("⚠️ Google API를 사용할 수 없습니다. 데모 모드로 실행됩니다.")
-            
-            # 데모 모드
-            sample_content = """
-            제목: K-Pop 가사에 나타난 청년 세대의 가치관 변화 연구
-            
-            서론: 현대 사회에서 K-Pop은 전 세계적인 문화 현상이다...
-            본론: 주요 아티스트별 가사 분석을 통해...
-            결론: K-Pop은 청년 세대의 가치관 형성에 영향을 미친다...
-            """
-            
-            with st.spinner("🤖 AI 분석 중... (데모 모드)"):
-                feedback = analyze_document_content(sample_content)
-                time.sleep(3)
-            
-            if feedback:
-                st.success("✅ 분석 완료! (데모 모드)")
-                st.markdown("### 📋 생성된 피드백")
-                st.markdown(feedback)
-                st.info("💡 실제 운영 시 이 피드백이 구글 문서에 댓글로 추가됩니다.")
+        # 권한 목록
+        permissions = file_info.get('permissions', [])
         
-        else:
-            # 실제 모드
-            doc_id = st.session_state.current_doc_id
+        st.markdown("#### 📋 권한 목록")
+        for perm in permissions:
+            perm_type = perm.get('type', 'unknown')
+            role = perm.get('role', 'unknown')
             
-            # 문서 내용 읽기
-            with st.spinner("📖 구글 문서 내용을 읽는 중..."):
-                doc_data = commenter.get_document_content(doc_id)
-            
-            if doc_data:
-                st.success(f"✅ 문서 읽기 성공: {doc_data['title']}")
-                
-                # AI 분석
-                with st.spinner("🤖 AI가 문서를 분석하고 있습니다..."):
-                    feedback = analyze_document_content(doc_data['content'])
-                
-                if feedback:
-                    # 피드백 섹션 파싱
-                    feedback_sections = parse_feedback_sections(feedback)
-                    
-                    # 댓글 추가
-                    st.markdown("### 📝 구글 문서에 댓글 추가 중...")
-                    
-                    success_count = 0
-                    for section_name, content in feedback_sections.items():
-                        if content:
-                            comment_text = f"🤖 AI 피드백 - {section_name}\n\n{content}"
-                            if commenter.add_comment(doc_id, comment_text):
-                                success_count += 1
-                                st.success(f"✅ {section_name} 댓글 추가 완료")
-                            time.sleep(2)  # API 호출 간격
-                    
-                    if success_count > 0:
-                        st.balloons()
-                        st.success(f"🎉 총 {success_count}개 댓글이 추가되었습니다!")
-                        st.link_button("📝 구글 문서에서 댓글 확인하기", doc_url)
+            if perm_type == 'anyone':
+                st.info(f"🌐 {perm_type}: {role}")
+            elif perm_type == 'user':
+                email = perm.get('emailAddress', 'unknown')
+                st.info(f"👤 {email}: {role}")
+            else:
+                st.info(f"🔧 {perm_type}: {role}")
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ 권한 확인 실패: {str(e)}")
+        return False
+
+# 메인 디버깅 함수
+def main_comment_debug():
+    st.title("🔧 댓글 추가 문제 진단")
     
-    elif analyze_button and not st.session_state.current_doc_id:
-        st.error("❌ 유효한 구글 문서 링크를 먼저 입력해주세요.")
-    
-    # 푸터
-    st.markdown("---")
     st.markdown("""
-    <div style="text-align: center; color: #666; margin-top: 2rem; padding: 1rem; background-color: #f8f9fa; border-radius: 10px;">
-        <p><strong>🏫 완도고등학교 국어과</strong></p>
-        <p>📧 개발: 공지훈 교사 | 💡 이 도구는 학생들의 연구 보고서 작성을 돕기 위해 개발되었습니다</p>
-        <p><small>⚠️ AI 피드백은 참고용이며, 최종 판단은 학생과 교사가 함께 해야 합니다</small></p>
-    </div>
-    """, unsafe_allow_html=True)
+    현재 문서에 댓글이 추가되지 않는 문제를 진단합니다.
+    """)
+    
+    # 현재 권한 상태 확인
+    check_current_permissions()
+    
+    st.markdown("---")
+    
+    # 상세 디버깅
+    debug_comment_creation()
 
 if __name__ == "__main__":
-    main()
+    main_comment_debug()
