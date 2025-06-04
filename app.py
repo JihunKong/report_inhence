@@ -168,7 +168,7 @@ class GoogleDocsCommenter:
             return None
     
     def add_comment(self, doc_id, comment_text):
-        """문서에 댓글 추가"""
+        """문서에 댓글 추가 - 수정된 버전"""
         if not self.is_available():
             return False
             
@@ -177,9 +177,11 @@ class GoogleDocsCommenter:
                 'content': comment_text
             }
             
+            # fields 파라미터 추가 (필수)
             result = self.drive_service.comments().create(
                 fileId=doc_id,
-                body=comment_body
+                body=comment_body,
+                fields="*"  # 모든 필드 반환
             ).execute()
             
             return True
