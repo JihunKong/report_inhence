@@ -450,8 +450,8 @@ def main():
     st.markdown("---")
     st.markdown("""
     <div style="text-align: center; color: #666; margin-top: 2rem; padding: 1rem; background-color: #f8f9fa; border-radius: 10px;">
-        <p><strong>🏫 완도고등학교 국어과</strong></p>
-        <p>📧 개발: 공지훈 교사 | 💡 이 도구는 학생들의 연구 보고서 작성을 돕기 위해 개발되었습니다</p>
+        <p><strong>🏫 완도고등학교</strong></p>
+        <p>📧 개발: 국어교사 공지훈 | 💡 이 도구는 완도고등학교 학생들의 연구 보고서 작성을 돕기 위해 개발되었습니다</p>
         <p><small>⚠️ AI 피드백은 참고용이며, 최종 판단은 학생과 교사가 함께 해야 합니다</small></p>
     </div>
     """, unsafe_allow_html=True)
