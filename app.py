@@ -11,7 +11,8 @@ from google.auth.transport.requests import Request
 st.set_page_config(
     page_title="연구 보고서 AI 피드백 시스템",
     page_icon="📝",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # CSS 스타일링 (동일)
@@ -173,21 +174,54 @@ class GoogleDocsCommenter:
             return False
             
         try:
-            comment_body = {
-                'content': comment_text
-            }
+            # Google Drive API의 댓글 길이 제한 확인 (30,000자)
+            MAX_COMMENT_LENGTH = 30000
             
-            # fields 파라미터 추가 (필수)
-            result = self.drive_service.comments().create(
-                fileId=doc_id,
-                body=comment_body,
-                fields="*"  # 모든 필드 반환
-            ).execute()
-            
-            return True
+            if len(comment_text) > MAX_COMMENT_LENGTH:
+                # 긴 댓글을 여러 개로 분할
+                comments_added = 0
+                total_chunks = (len(comment_text) + MAX_COMMENT_LENGTH - 1) // MAX_COMMENT_LENGTH
+                
+                for i in range(0, len(comment_text), MAX_COMMENT_LENGTH):
+                    chunk_num = (i // MAX_COMMENT_LENGTH) + 1
+                    chunk = comment_text[i:i + MAX_COMMENT_LENGTH]
+                    
+                    # 첫 번째 부분이 아니면 계속 표시 추가
+                    if chunk_num > 1:
+                        chunk = f"(부분 {chunk_num}/{total_chunks}) {chunk}"
+                    else:
+                        chunk = f"(부분 {chunk_num}/{total_chunks}) {chunk}"
+                    
+                    comment_body = {
+                        'content': chunk
+                    }
+                    
+                    result = self.drive_service.comments().create(
+                        fileId=doc_id,
+                        body=comment_body,
+                        fields="*"
+                    ).execute()
+                    
+                    comments_added += 1
+                    time.sleep(1)  # API 호출 간격
+                
+                return comments_added > 0
+            else:
+                comment_body = {
+                    'content': comment_text
+                }
+                
+                result = self.drive_service.comments().create(
+                    fileId=doc_id,
+                    body=comment_body,
+                    fields="*"
+                ).execute()
+                
+                return True
             
         except Exception as e:
             st.error(f"댓글 추가 실패: {str(e)}")
+            st.error(f"댓글 길이: {len(comment_text)}자")
             return False
 
 def extract_doc_id(url):
@@ -226,13 +260,25 @@ def analyze_document_content(content):
     4. **창의성과 독창성** (15점): 새로운 관점, 비판적 사고
     5. **형식과 표현** (10점): 맞춤법, 문법, 일관된 형식
 
+    각 섹션별로 명확히 구분하여 피드백을 작성하고, 섹션 제목은 다음과 같이 시작해주세요:
+    - 1. 구조와 논리성:
+    - 2. 내용의 충실성:
+    - 3. 학술적 글쓰기:
+    - 4. 창의성과 독창성:
+    - 5. 형식과 표현:
+    - 6. 추가 제안사항:
+    
     구체적이고 실행 가능한 조언을 제공해주세요.
     """
     
     try:
+        # 문서 내용이 너무 길 경우 요약
+        if len(content) > 10000:
+            content = content[:10000] + "\n\n[문서가 너무 길어 일부만 분석합니다]"
+        
         message = client.messages.create(
             model="claude-3-5-sonnet-20241022",
-            max_tokens=2500,
+            max_tokens=4000,  # 토큰 수 증가
             temperature=0.3,
             system=system_prompt,
             messages=[
@@ -250,7 +296,7 @@ def analyze_document_content(content):
         return None
 
 def parse_feedback_sections(feedback_text):
-    """AI 피드백을 섹션별로 파싱"""
+    """AI 피드백을 섹션별로 파싱 - 개선된 버전"""
     sections = {
         "전체 평가": "",
         "구조와 논리성": "",
@@ -261,29 +307,48 @@ def parse_feedback_sections(feedback_text):
         "추가 제안사항": ""
     }
     
+    # 섹션 헤더 패턴 정의
+    section_patterns = {
+        "구조와 논리성": ["구조", "논리", "체계", "서론", "본론", "결론", "흐름"],
+        "내용의 충실성": ["내용", "충실", "깊이", "자료", "근거", "탐구"],
+        "학술적 글쓰기": ["학술", "인용", "출처", "객관", "참고문헌"],
+        "창의성과 독창성": ["창의", "독창", "새로운", "관점", "비판적"],
+        "형식과 표현": ["형식", "표현", "문법", "맞춤법", "어휘"],
+        "추가 제안사항": ["제안", "추가", "향후", "개선", "보완"]
+    }
+    
     lines = feedback_text.split('\n')
     current_section = "전체 평가"
+    section_changed = False
     
     for line in lines:
         line = line.strip()
         if line:
-            # 섹션 감지
-            if any(keyword in line.lower() for keyword in ["구조", "논리", "체계"]):
-                current_section = "구조와 논리성"
-            elif any(keyword in line.lower() for keyword in ["내용", "충실", "깊이"]):
-                current_section = "내용의 충실성"
-            elif any(keyword in line.lower() for keyword in ["학술", "인용", "출처"]):
-                current_section = "학술적 글쓰기"
-            elif any(keyword in line.lower() for keyword in ["창의", "독창", "새로운"]):
-                current_section = "창의성과 독창성"
-            elif any(keyword in line.lower() for keyword in ["형식", "표현", "문법"]):
-                current_section = "형식과 표현"
-            elif any(keyword in line.lower() for keyword in ["제안", "추가", "향후"]):
-                current_section = "추가 제안사항"
+            # 섹션 헤더 감지 (더 정확한 매칭)
+            section_changed = False
+            for section_name, keywords in section_patterns.items():
+                # 라인 시작 부분에 섹션 키워드가 있고 ':' 또는 숫자가 포함된 경우
+                if (any(keyword in line.lower()[:20] for keyword in keywords) and 
+                    (":" in line or any(char.isdigit() for char in line[:5]))):
+                    current_section = section_name
+                    section_changed = True
+                    break
             
-            sections[current_section] += line + "\n"
+            # 현재 섹션에 내용 추가
+            if not section_changed or current_section == "전체 평가":
+                sections[current_section] += line + "\n"
     
-    return {k: v.strip() for k, v in sections.items() if v.strip()}
+    # 빈 섹션 제거 및 내용 정리
+    result = {}
+    for k, v in sections.items():
+        content = v.strip()
+        if content:
+            # 섹션 이름이 내용에 중복되어 있으면 제거
+            if content.startswith(k):
+                content = content[len(k):].strip(": \n")
+            result[k] = content
+    
+    return result
 
 def check_system_status():
     """시스템 상태 확인"""
@@ -430,13 +495,33 @@ def main():
                     st.markdown("### 📝 구글 문서에 댓글 추가 중...")
                     
                     success_count = 0
-                    for section_name, content in feedback_sections.items():
+                    total_sections = len(feedback_sections)
+                    
+                    # 프로그레스 바 추가
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for idx, (section_name, content) in enumerate(feedback_sections.items()):
                         if content:
+                            status_text.text(f"📝 {section_name} 댓글 추가 중...")
                             comment_text = f"🤖 AI 피드백 - {section_name}\n\n{content}"
+                            
+                            # 댓글 길이 확인
+                            if len(comment_text) > 1000:
+                                st.info(f"📏 {section_name} 섹션 길이: {len(comment_text)}자")
+                            
                             if commenter.add_comment(doc_id, comment_text):
                                 success_count += 1
                                 st.success(f"✅ {section_name} 댓글 추가 완료")
+                            else:
+                                st.error(f"❌ {section_name} 댓글 추가 실패")
+                            
+                            # 프로그레스 바 업데이트
+                            progress_bar.progress((idx + 1) / total_sections)
                             time.sleep(2)  # API 호출 간격
+                    
+                    progress_bar.empty()
+                    status_text.empty()
                     
                     if success_count > 0:
                         st.balloons()
